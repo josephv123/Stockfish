@@ -936,7 +936,7 @@ Value Search::Worker::search(
         assert(probCutBeta < VALUE_INFINITE && probCutBeta > beta);
 
         MovePicker mp(pos, ttData.move, probCutBeta - ss->staticEval, &thisThread->captureHistory);
-        Depth      probCutDepth = std::max(depth - 4, 0);
+        Depth      probCutDepth = std::max(depth - (4 + (rootDepth - depth) / 10), 0);
 
         while ((move = mp.next_move()) != Move::none())
         {
@@ -1321,7 +1321,7 @@ moves_loop:  // When in check, search starts here
         // otherwise let the parent node fail low with value <= alpha and try another move.
         if (PvNode && (moveCount == 1 || value > alpha))
         {
-            (ss + 1)->pv    = pv;
+            (ss + 1)->pv = pv;
             (ss + 1)->pv[0] = Move::none();
 
             // Extend move from transposition table if we are about to dive into qsearch.
