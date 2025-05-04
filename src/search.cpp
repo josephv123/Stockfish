@@ -980,10 +980,13 @@ Value Search::Worker::search(
         }
     }
 
-moves_loop:  // When in check, search starts here
+    moves_loop:  // When in check, search starts here
 
-    // Step 12. A small Probcut idea
-    probCutBeta = beta + 180 + depth * 20;
+    // Step 12. A small Probcut idea, with a tiny phase‑aware margin tweak
+    {
+        int phaseAdj   = pos.non_pawn_material(us) / 400;  // More material ⇒ allow slightly wider beta
+        probCutBeta    = beta + 180 + depth * 20 + phaseAdj;
+    }
     if ((ttData.bound & BOUND_LOWER) && ttData.depth >= depth - 4 && ttData.value >= probCutBeta
         && !is_decisive(beta) && is_valid(ttData.value) && !is_decisive(ttData.value))
         return probCutBeta;
@@ -1000,7 +1003,7 @@ moves_loop:  // When in check, search starts here
 
     int moveCount = 0;
 
-    // Step 13. Loop through all pseudo-legal moves until no moves remain
+    // Step 13. Loop through all pseudo‑legal moves until no moves remain
     // or a beta cutoff occurs.
     while ((move = mp.next_move()) != Move::none())
     {
@@ -1014,8 +1017,7 @@ moves_loop:  // When in check, search starts here
             continue;
 
         // At root obey the "searchmoves" option and skip moves not listed in Root
-        // Move List. In MultiPV mode we also skip PV moves that have been already
-        // searched and those of lower "TB rank" if we are in a TB root position.
+        // Move List. In MultiPV mode skip PV moves already searched, etc.
         if (rootNode
             && !std::count(thisThread->rootMoves.begin() + thisThread->pvIdx,
                            thisThread->rootMoves.begin() + thisThread->pvLast, move))
@@ -1044,16 +1046,13 @@ moves_loop:  // When in check, search starts here
         Depth r = reduction(improving, depth, moveCount, delta);
 
         // Increase reduction for ttPv nodes (*Scaler)
-        // Smaller or even negative value is better for short time controls
-        // Bigger value is better for long time controls
         if (ss->ttPv)
             r += 968;
 
         // Step 14. Pruning at shallow depth.
-        // Depth conditions are important for mate finding.
         if (!rootNode && pos.non_pawn_material(us) && !is_loss(bestValue))
         {
-            // Skip quiet moves if movecount exceeds our FutilityMoveCount threshold
+            // Skip quiet moves if movecount exceeds FutilityMoveCount threshold
             if (moveCount >= futility_move_count(improving, depth))
                 mp.skip_quiet_moves();
 
@@ -1075,9 +1074,11 @@ moves_loop:  // When in check, search starts here
                         continue;
                 }
 
-                // SEE based pruning for captures and checks
+                // SEE‑based pruning for captures and checks, with phase‑aware tweak
                 int seeHist = std::clamp(captHist / 31, -137 * depth, 125 * depth);
-                if (!pos.see_ge(move, -158 * depth - seeHist))
+                int seeThresh =
+                  -158 * depth - seeHist - pos.non_pawn_material(us) / 256;  // More pieces ⇒ prune more
+                if (!pos.see_ge(move, seeThresh))
                 {
                     bool skip = true;
                     if (depth > 2 && !capture && givesCheck && alpha < 0
@@ -1086,7 +1087,7 @@ moves_loop:  // When in check, search starts here
                         && !(PseudoAttacks[KING][pos.square<KING>(us)] & move.from_sq()))
                         skip = mp.otherPieceTypesMobile(
                           type_of(movedPiece),
-                          capturesSearched);  // if the opponent captures last mobile piece it might be stalemate
+                          capturesSearched);  // avoid pruning stalemating last piece
 
                     if (skip)
                         continue;
@@ -1098,6 +1099,10 @@ moves_loop:  // When in check, search starts here
                   (*contHist[0])[movedPiece][move.to_sq()]
                   + (*contHist[1])[movedPiece][move.to_sq()]
                   + thisThread->pawnHistory[pawn_structure_index(pos)][movedPiece][move.to_sq()];
+
+                // **New shallow depth history‑based pruning**
+                if (depth <= 2 && moveCount > 4 && history < -8000)
+                    continue;
 
                 // Continuation history based pruning
                 if (history < -4229 * depth)
@@ -1112,8 +1117,6 @@ moves_loop:  // When in check, search starts here
                   + 102 * (bestValue < ss->staticEval - 127 && ss->staticEval > alpha - 50);
 
                 // Futility pruning: parent node
-                // (*Scaler): Generally, more frequent futility pruning
-                // scales well with respect to time and threads
                 if (!ss->inCheck && lmrDepth < 12 && futilityValue <= alpha)
                 {
                     if (bestValue <= futilityValue && !is_decisive(bestValue)
@@ -1124,8 +1127,10 @@ moves_loop:  // When in check, search starts here
 
                 lmrDepth = std::max(lmrDepth, 0);
 
-                // Prune moves with negative SEE
-                if (!pos.see_ge(move, -27 * lmrDepth * lmrDepth))
+                // SEE‑based pruning for quiet moves, scaled by material
+                int seeQuietThresh =
+                  -27 * lmrDepth * lmrDepth - pos.non_pawn_material(us) / 512;
+                if (!pos.see_ge(move, seeQuietThresh))
                     continue;
             }
         }
